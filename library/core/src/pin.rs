@@ -1691,15 +1691,15 @@ mod hidden {
     }
 
     #[unstable(feature = "pin_derefmut_internals", issue = "none")]
-    impl<Ptr: Deref> Deref for PinHelper<Ptr> {
-        type Target = Ptr::Target;
-        fn deref(&self) -> &Ptr::Target {
-            &self.pointer
-        }
+    pub trait DerefMutHelper {
+        type Target: ?Sized;
+        fn deref_mut(&mut self) -> &mut Self::Target;
     }
 
     #[unstable(feature = "pin_derefmut_internals", issue = "none")]
-    impl<Ptr: DerefMut<Target: Unpin>> DerefMut for PinHelper<Ptr> {
+    impl<Ptr: DerefMut<Target: Unpin>> DerefMutHelper for PinHelper<Ptr> {
+        type Target = Ptr::Target;
+
         #[inline(always)]
         fn deref_mut(&mut self) -> &mut Ptr::Target {
             &mut self.pointer
@@ -1712,12 +1712,12 @@ mod hidden {
 impl<Ptr> DerefMut for Pin<Ptr>
 where
     Ptr: Deref,
-    hidden::PinHelper<Ptr>: DerefMut<Target = Self::Target>,
+    hidden::PinHelper<Ptr>: hidden::DerefMutHelper<Target = Self::Target>,
 {
     fn deref_mut(&mut self) -> &mut Ptr::Target {
         // SAFETY: Pin and PinHelper have the same layout, so this is equivalent to
         // `&mut self.pointer` which is safe because `Target: Unpin`.
-        unsafe { &mut **(self as *mut Pin<Ptr> as *mut hidden::PinHelper<Ptr>) }
+        hidden::DerefMutHelper::deref_mut(unsafe { &mut *(self as *mut Pin<Ptr> as *mut hidden::PinHelper<Ptr>) })
     }
 }
 
