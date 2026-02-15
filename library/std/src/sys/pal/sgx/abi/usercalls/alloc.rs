@@ -8,7 +8,7 @@ use crate::cell::UnsafeCell;
 use crate::convert::TryInto;
 use crate::mem::{self, ManuallyDrop, MaybeUninit};
 use crate::ops::{CoerceUnsized, Deref, DerefMut, Index, IndexMut};
-use crate::pin::PinCoerceUnsized;
+use crate::pin::PinSafe;
 use crate::ptr::{self, NonNull};
 use crate::slice::SliceIndex;
 use crate::{cmp, intrinsics, slice};
@@ -774,7 +774,7 @@ where
 impl<T: CoerceUnsized<U>, U> CoerceUnsized<UserRef<U>> for UserRef<T> {}
 
 #[unstable(feature = "pin_coerce_unsized_trait", issue = "150112")]
-unsafe impl<T: ?Sized> PinCoerceUnsized for UserRef<T> {}
+unsafe impl<T: ?Sized> PinSafe for UserRef<T> {}
 
 #[unstable(feature = "sgx_platform", issue = "56975")]
 impl<T, I> Index<I> for UserRef<[T]>

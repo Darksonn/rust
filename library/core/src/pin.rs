@@ -1232,15 +1232,14 @@ impl<Ptr: Deref> Pin<Ptr> {
     /// points to is pinned, that is a violation of the API contract and may lead to undefined
     /// behavior in later (even safe) operations.
     ///
-    /// By using this method, you are also making a promise about the [`Deref`],
-    /// [`DerefMut`], and [`Drop`] implementations of `Ptr`, if they exist. Most importantly, they
-    /// must not move out of their `self` arguments: `Pin::as_mut` and `Pin::as_ref`
-    /// will call `DerefMut::deref_mut` and `Deref::deref` *on the pointer type `Ptr`*
-    /// and expect these methods to uphold the pinning invariants.
-    /// Moreover, by calling this method you promise that the reference `Ptr`
-    /// dereferences to will not be moved out of again; in particular, it
-    /// must not be possible to obtain a `&mut Ptr::Target` and then
-    /// move out of that reference (using, for example [`mem::swap`]).
+    /// By using this method, you are also making a promise that `Ptr` is a [pin safe] pointer type.
+    /// For example, the [`Deref`], [`DerefMut`], and [`Drop`] implementations of `Ptr`, if they
+    /// exist, must not move out of their `self` arguments: `Pin::as_mut` and `Pin::as_ref` will
+    /// call `DerefMut::deref_mut` and `Deref::deref` *on the pointer type `Ptr`* and expect these
+    /// methods to uphold the pinning invariants. Moreover, by calling this method you promise that
+    /// the reference `Ptr` dereferences to will not be moved out of again; in particular, it must
+    /// not be possible to obtain a `&mut Ptr::Target` and then move out of that reference (using,
+    /// for example [`mem::swap`]).
     ///
     /// For example, calling `Pin::new_unchecked` on an `&'a mut T` is unsafe because
     /// while you are able to pin it for the given lifetime `'a`, you have no control
@@ -1342,6 +1341,7 @@ impl<Ptr: Deref> Pin<Ptr> {
     ///
     /// [`mem::swap`]: crate::mem::swap
     /// [`pin` module docs]: self
+    /// [pin safe]: PinSafe
     #[lang = "new_unchecked"]
     #[inline(always)]
     #[rustc_const_stable(feature = "const_pin", since = "1.84.0")]
@@ -1692,7 +1692,7 @@ impl<Ptr: [const] Deref> const Deref for Pin<Ptr> {
 mod helper {
     /// Helper that prevents downstream crates from implementing `DerefMut` for `Pin`.
     ///
-    /// The `Pin` type implements the unsafe trait `PinCoerceUnsized`, which essentially requires
+    /// The `Pin` type implements the unsafe trait `PinSafe`, which essentially requires
     /// that the type does not have a malicious `Deref` or `DerefMut` impl. However, without this
     /// helper module, downstream crates are able to write `impl DerefMut for Pin<LocalType>` as
     /// long as it does not overlap with the impl provided by stdlib. This is because `Pin` is
@@ -1812,54 +1812,119 @@ impl<Ptr: fmt::Pointer> fmt::Pointer for Pin<Ptr> {
 #[stable(feature = "pin", since = "1.33.0")]
 impl<Ptr, U> CoerceUnsized<Pin<U>> for Pin<Ptr>
 where
-    Ptr: CoerceUnsized<U> + PinCoerceUnsized,
-    U: PinCoerceUnsized,
+    Ptr: CoerceUnsized<U> + PinSafe,
+    U: PinSafe,
 {
 }
 
 #[stable(feature = "pin", since = "1.33.0")]
 impl<Ptr, U> DispatchFromDyn<Pin<U>> for Pin<Ptr>
 where
-    Ptr: DispatchFromDyn<U> + PinCoerceUnsized,
-    U: PinCoerceUnsized,
+    Ptr: DispatchFromDyn<U> + PinSafe,
+    U: PinSafe,
 {
 }
 
+/// Trait indicating that this pointer type is safe to use with [`Pin`].
+///
+/// By implementing this unsafe trait, you are asserting that the API of
+/// `Pin<_>` is sound when `Self` is the pointer type.
+///
+/// This trait has to do with the pointer type, and should not be confused with
+/// the pointee type. For example, given the type `Pin<Box<SomeTypeOfFuture>>`,
+/// the type that must be pin safe is `Box`, not `SomeTypeOfFuture`.
+///
+/// This is important because there are certain operations that are not safe to
+/// perform on a pinned value in general, but `Pin` implements various traits
+/// by performing those dangerous operations and passing the resulting dangerous
+/// values to safe trait implementations on the pointer type. A pointer is
+/// considered pin safe if the implementations of these safe traits does not
+/// abuse these dangerous values.
+///
+/// A few examples of dangerous operations that `Pin` may perform when it calls
+/// into trait implementations of the pointer type can be found below:
+///
+/// * Calling `Pin::new_unchecked`. This is dangerous because it assumes the
+///   pointed-to value is pinned.
+/// * Creating a `&mut T` to the pinned value. This is dangerous because it can
+///   be used to move the value (e.g. with [`mem::swap`]).
+/// * Creating a `&P` to the pointer type. This is dangerous because reference
+///   counted pointer types assume that if one refcounted pointer is wrapped in
+///   `Pin`, then they all are. For example, obtaining an `&Arc<T>` from a
+///   `Pin<Arc<T>>` is a problem because you can clone the `Arc` and eventually
+///   call [`Arc::get_mut`] and move the pinned value.
+///
+/// The below sections explains what a pointer type must satisfy to be pin safe.
+///
+/// [`mem::swap`]: crate::mem::swap "mem::swap"
+/// [`Arc<T>`]: ../../std/sync/struct.Arc.html "Arc"
+/// [`Arc::get_mut`]: ../../std/sync/struct.Arc.html#method.get_mut "Arc::get_mut"
+///
+/// ## No moving out
+///
+/// This pointer type must not provide any API that lets the end-user move the
+/// pointed-to value unless it is `!Unpin`.
+///
+/// As an example, if this pointer type implements [`DerefMut`] or [`Drop`],
+/// then methods such as [`Pin::as_mut`], [`Pin::set`], or the destructor of
+/// `Pin<_>`, will pass a `&mut T` to `DerefMut::deref_mut` or `Drop::drop` on
+/// the pointer type. The implementation of [`DerefMut`] or [`Drop`] on the
+/// pointer type must not abuse this `&mut T` value to move the value.
+///
+/// ## Object identity
+///
+/// A pin safe pointer type will keep pointing at the same value. That is, the
+/// address and concrete type returned by [`Deref`]/[`DerefMut`] does not
+/// change.
+///
+/// For example, if you have two values A and B of the same type where only A is
+/// pinned, then it would be illegal for the implementation of [`Deref`] or
+/// [`DerefMut`] to first return a reference to A, and then later return a
+/// reference to B.
+///
+/// This applies even if the `Pin<P>` value is moved, or if `deref`/`deref_mut`
+/// was called, or if an unsizing coercion was applied to the pointer, or if the
+/// pointer was used with dynamic dispatch. Or any other API the pointer type
+/// may choose to provide.
+///
+/// ## Clone
+///
+/// The `Pin<P>` type implements [`Clone`] by:
+///
+/// 1. Create a `&P` to the pointer type.
+/// 2. Call `P::clone` with the `&P` value.
+/// 3. Call `Pin::new_unchecked` on the return value of `P::clone`.
+///
+/// As explained previously, both operation 1 and 3 are dangerous. If this
+/// pointer type implements `Clone`, then it must not abuse the `&P` passed to
+/// `clone`, and if the original pointer referenced a pinned value, it must
+/// return something that is safe to pass to `Pin::new_unchecked`.
+///
+/// ## Formatting traits
+///
+/// The `Pin` type implements [`fmt::Debug`], [`fmt::Display`], and
+/// [`fmt::Pointer`] by calling the `fmt` method of said trait on the pointer
+/// type, which involves the unsafe operation of creating a `&P` reference.
+/// If the pointer type implements any of the formatting traits, then the
+/// implementation of said formatting trait must not use the `&P` reference in a
+/// way that is unsound.
 #[unstable(feature = "pin_coerce_unsized_trait", issue = "150112")]
-/// Trait that indicates that this is a pointer or a wrapper for one, where
-/// unsizing can be performed on the pointee when it is pinned.
-///
-/// # Safety
-///
-/// If this type implements `Deref`, then the concrete type returned by `deref`
-/// and `deref_mut` must not change without a modification. The following
-/// operations are not considered modifications:
-///
-/// * Moving the pointer.
-/// * Performing unsizing coercions on the pointer.
-/// * Performing dynamic dispatch with the pointer.
-/// * Calling `deref` or `deref_mut` on the pointer.
-///
-/// The concrete type of a trait object is the type that the vtable corresponds
-/// to. The concrete type of a slice is an array of the same element type and
-/// the length specified in the metadata. The concrete type of a sized type
-/// is the type itself.
-pub unsafe trait PinCoerceUnsized {}
+pub unsafe trait PinSafe {}
 
 #[stable(feature = "pin", since = "1.33.0")]
-unsafe impl<'a, T: ?Sized> PinCoerceUnsized for &'a T {}
+unsafe impl<'a, T: ?Sized> PinSafe for &'a T {}
 
 #[stable(feature = "pin", since = "1.33.0")]
-unsafe impl<'a, T: ?Sized> PinCoerceUnsized for &'a mut T {}
+unsafe impl<'a, T: ?Sized> PinSafe for &'a mut T {}
 
 #[stable(feature = "pin", since = "1.33.0")]
-unsafe impl<T: PinCoerceUnsized> PinCoerceUnsized for Pin<T> {}
+unsafe impl<T: PinSafe> PinCoerceUnsized for Pin<T> {}
 
 #[stable(feature = "pin", since = "1.33.0")]
-unsafe impl<T: ?Sized> PinCoerceUnsized for *const T {}
+unsafe impl<T: ?Sized> PinSafe for *const T {}
 
 #[stable(feature = "pin", since = "1.33.0")]
-unsafe impl<T: ?Sized> PinCoerceUnsized for *mut T {}
+unsafe impl<T: ?Sized> PinSafe for *mut T {}
 
 /// Constructs a <code>[Pin]<[&mut] T></code>, by pinning a `value: T` locally.
 ///

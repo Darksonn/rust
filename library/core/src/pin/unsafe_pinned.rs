@@ -179,4 +179,4 @@ impl<T: CoerceUnsized<U>, U> CoerceUnsized<UnsafePinned<U>> for UnsafePinned<T> 
 // #[unstable(feature = "unsafe_pinned", issue = "125735")]
 impl<T: DispatchFromDyn<U>, U> DispatchFromDyn<UnsafePinned<U>> for UnsafePinned<T> {}
 
-// FIXME(unsafe_pinned): impl PinCoerceUnsized for UnsafePinned<T>?
+// FIXME(unsafe_pinned): impl PinSafe for UnsafePinned<T>?
